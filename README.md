@@ -23,7 +23,7 @@ Gradio -> FastAPI -> Redis -> Celery Worker -> LLM
 
 ## Getting started
 
-\```bash
+\```bashuv sync --extra dev
 cp .env.example .env
 # fill in your values
 
