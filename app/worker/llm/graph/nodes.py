@@ -17,29 +17,20 @@ from app.worker.llm.provider import get_llm
 
 logger = structlog.get_logger(__name__)
 
-# Initialized once at module load rather than inside each node function.
-# Client construction is not free (connection-pool and retry/timeout setup);
-# four nodes sharing one instance pays that cost once instead of four times per
-# graph run. The concrete backend (Ollama or Anthropic) is chosen by config in
-# get_llm(); the nodes below only rely on the BaseChatModel .invoke() contract,
-# so they are backend-agnostic. Chat model instances are stateless between
-# calls, so module-level sharing is safe.
+# One shared client for all four nodes. The backend (Ollama or Anthropic) is
+# chosen in get_llm(); nodes use only the BaseChatModel .invoke() contract.
 llm = get_llm()
 
 
 def _extract_json(text: str) -> dict:
-    """Extract the first JSON object from an LLM response.
+    """Pull the first JSON object out of an LLM response.
 
-    LLMs frequently wrap JSON in markdown code fences (```json ... ```) or
-    add explanatory text before/after the object. This function handles all
-    three cases: plain JSON, fenced JSON, and JSON embedded in prose.
+    Handles plain JSON, ```json fenced blocks, and JSON embedded in prose.
     """
-    # Strip markdown code fences first
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         return json.loads(fenced.group(1))
 
-    # Fall back to the first {...} block in the response
     obj_match = re.search(r"\{.*\}", text, re.DOTALL)
     if obj_match:
         return json.loads(obj_match.group(0))
@@ -61,12 +52,9 @@ _ANALYSIS_SCHEMA = """{
 
 
 def analyzer_node(state: GraphState) -> dict:
-    """Identify the gap between resume and job description.
+    """Gap analysis between resume and JD; produces a brief, makes no edits.
 
-    Produces no changes to the resume — only analysis that the tailor
-    node will act on. Keeping analysis and editing in separate nodes means
-    the tailor receives a focused brief rather than having to do both
-    reasoning tasks in one prompt, which degrades output quality.
+    Analysis and editing are split across nodes so each gets a focused prompt.
     """
     log = logger.bind(node="analyzer")
 
@@ -125,12 +113,11 @@ _TAILOR_SCHEMA = """{
 
 
 def tailor_node(state: GraphState) -> dict:
-    """Make targeted edits to the resume based on the analyzer's brief.
+    """Rewrite the resume from the analyzer's brief.
 
-    On retries, the validator's rejection reason is included in the prompt so
-    the tailor knows specifically what to fix rather than repeating the same
-    mistake. The retry count is incremented on every pass so the conditional
-    edge can cap total retries.
+    On a retry, the validator's feedback is injected into the prompt so the
+    model fixes the named issues. Increments the retry count each pass so the
+    conditional edge can cap it.
     """
     log = logger.bind(
         node="tailor",
@@ -215,12 +202,10 @@ _VALIDATION_SCHEMA = """{
 
 
 def validator_node(state: GraphState) -> dict:
-    """Verify the tailor's work is honest, structurally sound, and accurate.
+    """Quality gate: check the rewrite for fabrication, structure, and accuracy.
 
-    This node is the quality gate. A failed validation routes back to the
-    tailor node with specific feedback; a passed validation routes to scoring.
-    Validator exceptions are caught and surfaced as a failed validation with
-    feedback so the tailor can retry, rather than terminating the graph.
+    Failure routes back to the tailor with feedback; success routes to scoring.
+    Exceptions become a failed validation (not a crash) so the tailor can retry.
     """
     log = logger.bind(node="validator")
 
@@ -277,9 +262,7 @@ def validator_node(state: GraphState) -> dict:
 
     except Exception as e:
         log.exception("validator.error", error=str(e))
-        # Surface as a failed validation with feedback so the tailor can retry.
-        # Never raise from this node — an exception here should not terminate
-        # the graph when the tailor can likely produce a better result.
+        # Never raise from here — turn the error into a retryable failure.
         return {
             "validation_passed": False,
             "validation_feedback": f"Validator error: {e} — retry tailoring",
@@ -299,15 +282,10 @@ _SCORING_SCHEMA = """{
 
 
 def scorer_node(state: GraphState) -> dict:
-    """Quantify the improvement made by the tailor.
+    """Score the result (ATS score, delta, confidence, remaining gaps).
 
-    Scoring is informational — it helps the user understand how much the
-    tailoring helped and what gaps remain. It is intentionally the last node
-    so that a scoring failure does not prevent the user from receiving the
-    modified resume. If scoring fails, we return sensible zero-confidence
-    defaults rather than propagating an error. A low-confidence score is more
-    useful than a hard failure because the user still gets the tailored resume;
-    the score just signals they should review it carefully.
+    Last node by design: a scoring failure returns zero-confidence defaults
+    instead of an error, so the user still receives the tailored resume.
     """
     log = logger.bind(node="scorer")
 
@@ -370,9 +348,7 @@ def scorer_node(state: GraphState) -> dict:
         return {"scoring": result}
 
     except Exception as e:
-        # Scoring failure must not fail the job. The user still receives their
-        # tailored resume; the score fields will show zeroes with low confidence,
-        # which is an honest signal to review the output manually.
+        # Scoring failure must not fail the job — return zeroed defaults.
         log.exception("scorer.failed", error=str(e))
         return {
             "scoring": ScoringResult(

@@ -36,29 +36,18 @@ async def initialize_db() -> None:
 def hash_api_key(key: str) -> str:
     """Return the salted SHA-256 hex digest of an API key.
 
-    We never store plaintext API keys for the same reason we never store
-    plaintext passwords: if the database is exfiltrated, the attacker learns
-    nothing useful. A raw SHA-256 without a salt would still be vulnerable to
-    rainbow-table attacks (precomputed hash→value dictionaries). Including
-    api_key_salt — a secret value unique to this deployment — means the
-    attacker would need both the database dump *and* the salt to mount any
-    offline attack. The salt is stored in Vault / environment variables, not
-    in the database, so a database-only breach is insufficient.
+    Only the digest is stored. The salt lives in config, not the DB, so a
+    database-only breach can't mount a rainbow-table attack.
     """
     salted = f"{settings.api_key_salt}:{key}"
     return hashlib.sha256(salted.encode()).hexdigest()
 
 
 async def verify_api_key(key: str) -> bool:
-    """Return True if the key exists in the database and is active.
+    """Return True if the key exists and is active; touch last_used_at.
 
-    On success, updates last_used_at so we have an audit trail of key usage.
-    Never raises — returns False and logs on any error so that an unexpected
-    database failure degrades gracefully to a 401 rather than a 500.
-
-    We log the key_hash rather than the plaintext key so that log aggregators
-    (Loki, CloudWatch, etc.) never capture material that could be used to
-    impersonate a client.
+    Never raises — returns False on any error so a DB failure degrades to 401,
+    not 500. Only the hash prefix is logged, never the plaintext key.
     """
     key_hash = hash_api_key(key)
     log = logger.bind(key_hash=key_hash[:12] + "…")  # log prefix only
@@ -93,16 +82,8 @@ async def verify_api_key(key: str) -> bool:
 async def create_api_key() -> str:
     """Generate, store, and return a new plaintext API key.
 
-    Uses secrets.token_urlsafe(32) which draws from the OS CSPRNG — the same
-    entropy source used for TLS keys. The result is 43 URL-safe base64
-    characters (~256 bits of entropy), making brute-force infeasible.
-
-    Only the salted SHA-256 hash is written to the database. The plaintext is
-    returned exactly once — this is the user's only opportunity to copy it.
-    After this function returns the plaintext is gone forever: there is no
-    "show key again" endpoint. This mirrors how GitHub personal access tokens
-    and AWS secret keys work, and it is the correct design because it means a
-    database breach exposes nothing recoverable.
+    256 bits from the OS CSPRNG. Only the hash is stored; the plaintext is
+    returned exactly once and is unrecoverable afterward (like a GitHub PAT).
     """
     plaintext = secrets.token_urlsafe(32)
     key_hash = hash_api_key(plaintext)

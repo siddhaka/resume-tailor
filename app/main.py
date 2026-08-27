@@ -58,13 +58,8 @@ Poll `GET /v1/jobs/{job_id}` for results.
     lifespan=lifespan,
 )
 
-# CORS: allow all origins in development so the Gradio client and local
-# browser testing work without configuration. In production this MUST be
-# restricted to the specific origin(s) that serve your frontend (e.g.
-# ["https://yourdomain.com"]). CORS exists to prevent a malicious website
-# from silently making authenticated requests to this API using a visitor's
-# browser cookies or stored credentials. Allowing all origins in production
-# defeats that protection entirely.
+# Allow all origins in development for local/Gradio testing; lock this down to
+# your frontend origin(s) in production.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.environment == "development" else [],
@@ -73,10 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Prometheus instrumentation. The /metrics endpoint exposes counters,
-# histograms, and gauges for every route (request counts, latency
-# percentiles, status code distributions) in the Prometheus text format,
-# ready for any Prometheus-compatible scraper to collect.
+# Expose per-route request/latency metrics at /metrics in Prometheus format.
 Instrumentator().instrument(app).expose(app)
 
 app.include_router(router)

@@ -10,13 +10,9 @@ logger = structlog.get_logger(__name__)
 
 @celery_app.task(bind=True, name="resume_tailor.process_resume")
 def process_resume(self, job_id: str, resume_latex: str, job_description: str) -> dict:  # type: ignore[override]
-    """Run the LLM pipeline and return a serialisable TailorResult dict.
+    """Run the pipeline; return a dict so Celery's JSON backend can store it.
 
-    The Celery backend stores the return value in Redis. FastAPI's GET
-    /v1/jobs/{job_id} endpoint reads it back and deserialises it into a
-    TailorResult via TailorResult(**task.get()). The dict round-trip is
-    intentional — Pydantic models are not directly JSON-serialisable by
-    Celery's default JSON serialiser, but model_dump() is.
+    The status endpoint reads it back with TailorResult(**task.get()).
     """
     log = logger.bind(job_id=job_id)
     log.info("task.started")

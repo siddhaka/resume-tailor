@@ -1,26 +1,14 @@
-# No multi-stage build here.
-# The Gradio client has only two runtime dependencies: gradio and httpx.
-# Neither requires a compiler, header files, or a build system. A multi-stage
-# build would add a second FROM and a COPY --from layer without meaningfully
-# reducing the image size — all the bulk comes from the gradio package itself,
-# which is needed at runtime. Simplicity wins when there is no size benefit.
-
+# Single-stage: the client's only deps (gradio, httpx) need no build tooling,
+# so a multi-stage build would save nothing.
 FROM python:3.11-slim
 
-# --no-cache-dir: pip caches downloaded wheels on the host between installs.
-# In a container image that is built once and run many times, that cache is
-# never reused across builds (each build starts from a fresh layer), so it
-# only wastes space inside the image layer. --no-cache-dir prevents pip from
-# writing the cache at all.
 RUN pip install --no-cache-dir gradio httpx
 
 WORKDIR /app
 
 COPY app.py .
 
-# Non-root user — same reasoning as Dockerfile.api: limit blast radius if the
-# application is compromised. A non-root user cannot write to system paths,
-# install system packages, or escalate privileges.
+# Non-root user to limit blast radius.
 RUN useradd --uid 1001 --create-home appuser
 USER appuser
 

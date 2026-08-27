@@ -13,45 +13,11 @@ logger = structlog.get_logger(__name__)
 class RateLimiter:
     """Sliding-window rate limiter backed by a Redis sorted set.
 
-    Each unique identifier (typically a hashed API key) gets its own sorted
-    set key. Members are individual request UUIDs; scores are request
-    timestamps in milliseconds.
-
-    Why sorted sets implement sliding window correctly
-    --------------------------------------------------
-    A sorted set lets us ask "how many requests arrived in the last 60 s?"
-    with a single ZREMRANGEBYSCORE + ZCARD pair. The window slides with real
-    time: a request made at T=0 expires at T=60 s regardless of how many
-    other requests arrived between those moments. Every check reflects the
-    true 60-second history, not an arbitrary clock boundary.
-
-    Why fixed-window counters have a boundary exploit
-    -------------------------------------------------
-    A fixed window resets at wall-clock boundaries (e.g., :00 of every
-    minute). A caller who sends 60 requests at 00:59 and another 60 requests
-    at 01:00 has made 120 requests in 2 seconds while the counter shows
-    60 in each window — double the intended limit. The sorted-set approach
-    makes this impossible: those 120 requests all fall inside the same 60 s
-    window regardless of which clock-minute they straddle.
-
-    Why millisecond timestamps as scores
-    ------------------------------------
-    Two requests arriving in the same second would collide if scores were
-    integer seconds — ZADD would treat them as the same entry and only one
-    would be stored. Milliseconds make accidental score collision roughly
-    1000× less likely. We also use a UUID as the member value so that even
-    two requests with identical millisecond timestamps produce distinct
-    members.
-
-    Why TTL is 70 seconds, not 60
-    ------------------------------
-    After the last request in a window the sorted set will be empty but
-    still exists in Redis until its TTL fires. A 60 s TTL risks the key
-    expiring while entries from 59 s ago are still within the window if
-    clock skew or pipeline latency adds a small delay. 70 s provides a
-    10-second buffer: the key outlives its contents, and we avoid a race
-    where a fresh request on an just-expired key sees an empty set and
-    resets the window early.
+    Each identifier (a hashed API key) gets one sorted set: members are request
+    UUIDs, scores are millisecond timestamps. A ZREMRANGEBYSCORE + ZCARD pair
+    counts requests in the trailing 60 s, which avoids the boundary burst a
+    fixed-window counter allows. Millisecond scores plus UUID members avoid
+    collisions; the key's 70 s TTL outlives a full window so it can't reset early.
     """
 
     def __init__(self, redis_client: aioredis.Redis, limit_per_minute: int) -> None:
@@ -59,14 +25,10 @@ class RateLimiter:
         self._limit = limit_per_minute
 
     async def is_allowed(self, identifier: str) -> tuple[bool, int]:
-        """Check whether *identifier* may make another request right now.
+        """Return (is_allowed, requests_remaining) for this identifier.
 
-        Returns (is_allowed, requests_remaining).  requests_remaining is 0
-        when the limit has been reached; otherwise it reflects how many more
-        requests are permitted within the current sliding window.
-
-        The identifier is hashed before use as a Redis key so that raw API
-        keys (or IP addresses) are never written to Redis storage.
+        The identifier is hashed before use as the Redis key so raw keys are
+        never stored.
         """
         key = "rate_limit:" + hashlib.sha256(identifier.encode()).hexdigest()
         now_ms = int(time.time() * 1000)

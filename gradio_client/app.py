@@ -1,13 +1,5 @@
-# Gradio client — thin HTTP wrapper around the FastAPI backend.
-#
-# This file contains zero business logic, zero database access, zero Redis
-# connections, and zero LLM calls. It only speaks HTTP to the API.
-#
-# That separation is intentional: the Gradio interface is fully replaceable.
-# You could swap it for a CLI (`python cli.py --resume resume.tex --jd jd.txt`),
-# a VS Code extension, a GitHub Action, or a mobile app without changing a
-# single line of the backend. The API is the product; this file is one
-# particular way to interact with it.
+# Gradio client — a thin HTTP wrapper around the API. No business logic; it only
+# speaks HTTP, so it can be swapped for a CLI or any other client freely.
 
 from __future__ import annotations
 
@@ -18,27 +10,13 @@ from collections.abc import Generator
 import gradio as gr
 import httpx
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Configuration — all values from environment, never hardcoded
-# ─────────────────────────────────────────────────────────────────────────────
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 POLL_INTERVAL_SECONDS = 2
 POLL_TIMEOUT_SECONDS = 120
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Formatting — presentation concern, belongs here not in the API
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def format_changes(result: dict) -> str:
-    """Format structured API result into human-readable text.
-
-    Formatting is a presentation concern that belongs in the client layer, not
-    in the API. The API returns clean, structured JSON; a CLI client, a mobile
-    app, or a VS Code extension would format that same JSON completely
-    differently. Keeping formatting here means the API stays reusable.
-    """
+    """Render the structured API result as readable text (a client concern)."""
     lines: list[str] = []
 
     lines.append("CHANGES MADE")
@@ -74,23 +52,15 @@ def format_changes(result: dict) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core function — submit job and stream status updates
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def submit_and_poll(
     resume_latex: str,
     job_description: str,
     api_key: str,
 ) -> Generator[tuple[str, str, str], None, None]:
-    """Submit a tailoring job and yield (latex, changes, status) as it progresses.
+    """Submit a job and yield (latex, changes, status) as it progresses.
 
-    This is a generator so Gradio can stream intermediate status messages to
-    the UI while the LLM processes. Without this, the UI would appear frozen
-    for the 10–30 seconds the LLM takes, giving users no feedback.
-
-    Yields: (modified_latex, changes_text, status_message)
+    A generator so Gradio can stream status while the LLM runs, instead of
+    freezing the UI.
     """
     # ── 1. Validate inputs ────────────────────────────────────────────────────
     if not resume_latex.strip() or not job_description.strip() or not api_key.strip():
@@ -276,10 +246,7 @@ with gr.Blocks(title="Resume Tailor") as demo:
     )
 
 if __name__ == "__main__":
-    # server_name="0.0.0.0" — by default Gradio listens only on 127.0.0.1,
-    # which is not accessible from outside the container. Binding to 0.0.0.0
-    # means the server listens on all network interfaces, making it reachable
-    # via the container's exposed port 7860 on the host machine.
+    # Bind 0.0.0.0 so the server is reachable via the container's exposed port.
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,

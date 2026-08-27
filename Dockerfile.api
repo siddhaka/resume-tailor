@@ -1,106 +1,54 @@
-# Multi-stage build: why it exists
-# ----------------------------------
-# Stage 1 (builder) installs uv, all build tools, and pulls every dependency.
-# That stage is large — build tools, pip cache, and header files add up fast.
-# Stage 2 (runtime) starts from a fresh slim base and copies only the compiled
-# virtual environment out of the builder. Build tools never touch the runtime
-# image. A typical single-stage Python image is 800 MB – 1 GB. A multi-stage
-# build routinely gets the runtime image below 300 MB: fewer megabytes means
-# faster deploys, lower registry storage costs, and a smaller attack surface.
+# Multi-stage build: the builder pulls dependencies; the runtime image copies
+# only the resulting venv, keeping it slim and free of build tooling.
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — builder
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Stage 1: builder ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 RUN pip install uv
 
 WORKDIR /app
 
-# Copy dependency manifests BEFORE application code.
-# Docker caches each instruction as a layer. If pyproject.toml and uv.lock
-# have not changed, Docker reuses the cached dependency layer on the next
-# build and skips reinstalling packages — even if every .py file changed.
-# Copying the manifests first means a code change does not bust the much
-# more expensive "install all packages" layer.
+# Copy manifests before code so the dependency layer is cached across code edits.
 COPY pyproject.toml uv.lock ./
 
-# --no-dev:   exclude pytest, ruff, mypy, gradio and other dev tools.
-#             Nothing that only runs in CI or on a developer laptop belongs
-#             in a production image.
-# --frozen:   install the exact versions pinned in uv.lock, not the latest
-#             compatible releases. This guarantees that every build of the
-#             same commit produces an identical environment.
+# --no-dev drops test/lint tooling; --frozen pins to uv.lock for reproducibility.
 RUN uv sync --no-dev --frozen
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — runtime
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
+# curl is used by the HEALTHCHECK below.
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Run as a non-root user.
-# If the application has a vulnerability that allows remote code execution,
-# an attacker running as root inside the container can modify system files,
-# install new tools, and — in some container-escape scenarios — escalate to
-# host root. A dedicated unprivileged user limits the blast radius: the
-# attacker can only do what uid 1001 is allowed to do, which is very little.
+# Run as a non-root user to limit blast radius.
 RUN groupadd --gid 1001 appuser && \
     useradd --uid 1001 --gid appuser --shell /bin/bash --create-home appuser
 
 WORKDIR /app
 
-# Copy only the virtual environment from the builder — not build tools, not
-# the pip cache, not the uv binary itself. The venv contains everything the
-# application needs to run.
+# Copy only the venv and the app package — no build tools, tests, or infra.
 COPY --from=builder /app/.venv /app/.venv
-
-# Copy only the application package — not tests/, not infra/, not docs/, not
-# gradio_client/. Every file in the runtime image is potential attack surface.
-# A configuration file accidentally left in the image can leak secrets; a test
-# file can expose internal API structure. Copy only what the server needs.
 COPY app/ /app/app/
 
-# Activate the virtual environment by prepending it to PATH.
 ENV PATH="/app/.venv/bin:$PATH"
-
-# PYTHONUNBUFFERED=1 — forces Python to flush stdout/stderr immediately.
-# Without this, structlog's JSON output is line-buffered in production and
-# log lines may not appear in `docker logs` until the buffer fills (typically
-# 4–8 KB). In an incident you need logs in real time, not after a threshold.
-#
-# PYTHONDONTWRITEBYTECODE=1 — prevents Python from writing .pyc bytecode cache
-# files. In a container that starts fresh on every deploy the cache is never
-# reused across runs, so it only pollutes the container's filesystem. Disabling
-# it also avoids any risk of stale .pyc files causing confusing import behaviour.
+# Unbuffered stdout for real-time logs; no .pyc files in an ephemeral container.
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Create the data directory in the image so that a named volume mounted here at
-# runtime inherits appuser ownership. Without this, Docker auto-creates the
-# mountpoint as root and the non-root process cannot open the SQLite file.
+# Create /app/data before the volume mounts here so it inherits appuser
+# ownership; otherwise Docker creates the mountpoint as root and the non-root
+# process cannot open the SQLite file.
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
 
-# Docker-level health check (separate from the Kubernetes readiness probe —
-# this one is read by docker-compose to gate the `depends_on: condition:
-# service_healthy` logic).
-#
-# start-period=40s: the application needs time to spin up uvicorn workers,
-# connect to Redis, and create the SQLite schema. Without a start period Docker
-# marks the container unhealthy before it has had a chance to become ready,
-# which triggers an immediate restart loop. 40 s gives it sufficient runway.
+# Gates docker-compose's `depends_on: service_healthy`. start-period covers
+# uvicorn startup, the Redis connection, and SQLite schema creation.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# --workers 2: two uvicorn processes share the port via SO_REUSEPORT.
-# This provides concurrency for simultaneous requests without a separate
-# process manager. In Kubernetes, horizontal scaling (more pods) is preferred
-# over vertical scaling (more workers per pod) because a pod crash only
-# affects that pod's traffic, not all workers.
+# Two uvicorn workers per container; scale further with more pods, not workers.
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \

@@ -6,33 +6,11 @@ from app.worker.llm.graph.state import GraphState
 
 logger = structlog.get_logger(__name__)
 
-# MAX_RETRIES is 2 rather than unlimited for two reasons:
-#
-# Cost: each retry is a full LLM round-trip on a potentially long prompt.
-# Three total attempts (1 original + 2 retries) already triples the per-job
-# cost. Unlimited retries on a systematic prompt failure would loop forever
-# and bill indefinitely until the task is killed by a Celery time limit.
-#
-# Signal: if the tailor cannot pass validation in three attempts, this is
-# almost certainly a prompt or model capability issue — not a randomness
-# issue that more retries would fix. The right fix is improving the prompt,
-# not spinning endlessly.
-#
-# Why we proceed to scorer even at max retries rather than failing hard:
-# The tailor produced *something* — a modified resume that may still be
-# useful to the user even if the validator had objections. Returning a
-# result with a low confidence score is more useful than returning an error:
-# the user gets their resume back and the low score signals manual review.
-# A hard error gives the user nothing and forces them to resubmit.
-#
-# Why error state routes to END rather than retrying:
-# Node exceptions are categorically different from validation failures.
-# A validation failure means "the output was produced but has quality issues —
-# try again with different instructions." An exception in the analyzer means
-# "we have no analysis object at all." Retrying the tailor without analysis
-# would mean sending it an empty brief — the output would be worse, not
-# better. The only honest thing to do is surface the error immediately.
-
+# Cap retries so a systematic failure can't loop (and bill) forever; past the
+# cap we still hand the last output to the scorer rather than failing hard, so
+# the user gets a result plus a low score signalling manual review. Node
+# exceptions route straight to END — retrying the tailor with no analysis would
+# only produce worse output.
 MAX_RETRIES = 2
 
 

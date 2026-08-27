@@ -20,27 +20,11 @@ logger = structlog.get_logger(__name__)
 
 
 def build_graph() -> CompiledStateGraph:
-    """Construct and compile the four-node resume tailoring graph.
+    """Build and compile the tailoring graph.
 
-    Graph construction steps:
-    - add_node: registers a callable under a name; LangGraph calls it with
-      the current state and merges its return dict back into state.
-    - set_entry_point: tells the graph which node receives the initial state
-      when .invoke() is called.
-    - add_edge: unconditional transition — after node A finishes, always
-      go to node B.
-    - add_conditional_edges: transition where the next node depends on the
-      return value of a routing function. The mapping dict translates string
-      return values to node names (or END).
-    - compile(): validates the graph (checks for unreachable nodes, missing
-      edges, cycles without conditionals) and returns an executable Runnable.
-
-    We build the graph inside this function rather than at module level so
-    that each call_llm() invocation gets a freshly constructed graph. LangGraph
-    compiled graphs hold no mutable state between runs, so building once at
-    module level would work — but per-call construction keeps call_llm()
-    self-contained and independently testable: tests can import call_llm and
-    call it without worrying about module-level graph state from other tests.
+    analyzer -> tailor -> validator, then a conditional edge routes to a retry,
+    the scorer, or END. Built per call rather than at module level so call_llm()
+    stays self-contained and easy to test in isolation.
     """
     graph: StateGraph = StateGraph(GraphState)
 
@@ -70,11 +54,10 @@ def build_graph() -> CompiledStateGraph:
 
 
 def call_llm(resume_latex: str, job_description: str) -> TailorResult:
-    """Run the multi-agent graph and return a structured TailorResult.
+    """Run the pipeline and return a structured TailorResult.
 
-    This is the single entry point the Celery task calls. The graph
-    encapsulates the entire analyzer → tailor → validator → scorer pipeline;
-    the task does not need to know about any of the nodes or state.
+    The single entry point the Celery task calls — it knows nothing about the
+    nodes or graph state.
     """
     graph = build_graph()
 

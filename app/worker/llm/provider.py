@@ -6,19 +6,12 @@ from app.config import settings
 
 
 def get_llm() -> BaseChatModel:
-    """Return a chat model chosen by the LLM_PROVIDER setting.
+    """Return a chat model chosen by LLM_PROVIDER.
 
-    The pipeline nodes depend only on the LangChain BaseChatModel interface
-    (``.invoke([messages])``), so the backend is swappable without touching
-    any node logic. Two backends are supported:
+    - "ollama"    — self-hosted, no key (default); format="json" forces valid JSON.
+    - "anthropic" — Claude; requires ANTHROPIC_API_KEY.
 
-    - "ollama"    — a self-hosted model (default). Requires no API key and no
-                    paid service; ``format="json"`` constrains the model to
-                    emit valid JSON, which the nodes parse into typed objects.
-    - "anthropic" — Claude via the Anthropic API. Requires ANTHROPIC_API_KEY.
-
-    Providers are imported lazily so that running with one backend does not
-    require the other's package or credentials to be present.
+    Backends are imported lazily so only the selected one needs to be installed.
     """
     provider = settings.llm_provider.lower()
 

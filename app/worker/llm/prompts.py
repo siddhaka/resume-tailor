@@ -1,13 +1,7 @@
-"""Shared JSON schema constants for the resume-tailor LLM pipeline.
+"""Shared JSON schema constants for the pipeline.
 
-Agent-specific system prompts and user message templates live in
-app/worker/llm/graph/nodes.py alongside the node functions that use them.
-Keeping prompts co-located with their nodes makes it easy to read a node
-and immediately see what it asks the LLM to do, without cross-file jumping.
-
-This module retains only the schema strings that are referenced in more than
-one place, or that benefit from being inspectable outside the graph context
-(e.g., documentation generation, prompt testing scripts).
+Per-node system prompts live next to the nodes in graph/nodes.py; only reusable
+schema strings live here.
 """
 
 from __future__ import annotations
