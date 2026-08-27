@@ -1,0 +1,23 @@
+# Autoscale the stateless worker on CPU utilization. Requires metrics-server
+# (enabled in the cluster) and the CPU resource requests declared on the worker
+# Deployment. The API is intentionally not autoscaled — it owns a single-writer
+# SQLite volume and stays at one replica.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: resume-tailor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

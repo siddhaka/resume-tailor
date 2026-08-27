@@ -41,10 +41,17 @@ async def create_job(
     log = logger.bind(job_id=job_id, trace_id=trace_id, api_key_hash=key_hash_prefix)
     log.info("job.created")
 
-    process_resume.delay(
-        job_id=job_id,
-        resume_latex=request.resume_latex,
-        job_description=request.job_description,
+    # Bind our job_id as Celery's task_id so GET /v1/jobs/{job_id} can look the
+    # task up directly. Without task_id=job_id, Celery assigns its own random
+    # task id and the status endpoint — which queries AsyncResult(job_id) — would
+    # never resolve, leaving every job stuck reporting "queued".
+    process_resume.apply_async(
+        kwargs={
+            "job_id": job_id,
+            "resume_latex": request.resume_latex,
+            "job_description": request.job_description,
+        },
+        task_id=job_id,
     )
 
     return CreateJobResponse(

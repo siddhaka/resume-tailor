@@ -1,0 +1,48 @@
+# The Celery worker is stateless and holds no local data — it reads jobs from
+# Redis and writes results back to Redis. That makes it the correct component
+# to scale horizontally (see hpa.yml). Resource requests are declared so the
+# HorizontalPodAutoscaler has a CPU baseline to measure utilization against.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: resume-tailor
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: resume-tailor-worker:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            exec:
+              command:
+                - "celery"
+                - "-A"
+                - "app.worker.celery_app.celery_app"
+                - "inspect"
+                - "ping"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10

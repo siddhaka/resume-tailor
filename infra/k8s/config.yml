@@ -1,0 +1,29 @@
+# Non-secret configuration shared by the api and worker pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: resume-tailor
+data:
+  REDIS_URL: "redis://redis:6379/0"
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  # The SQLite key store lives on a persistent volume mounted at /data.
+  DATABASE_URL: "sqlite:////data/resume_tailor.db"
+  # Self-hosted LLM: pods reach the Ollama server running on the host machine
+  # via the DNS name minikube injects for the host gateway.
+  LLM_PROVIDER: "ollama"
+  OLLAMA_BASE_URL: "http://host.minikube.internal:11434"
+  OLLAMA_MODEL: "qwen2.5-coder:7b"
+---
+# Secret material. These are non-production placeholder values; a real
+# deployment injects them from a secrets manager rather than committing them.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: resume-tailor
+type: Opaque
+stringData:
+  API_KEY_SALT: "change-me-in-production-0123456789abcdef"
+  SECRET_KEY: "change-me-in-production-fedcba9876543210"

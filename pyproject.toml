@@ -16,6 +16,11 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=6.1.0",
     "python-multipart>=0.0.9",
     "anthropic>=0.25.0",
+    "aiosqlite>=0.20.0",
+    "langgraph>=0.1.0",
+    "langchain-anthropic>=0.1.0",
+    "langchain-ollama>=0.2.0",
+    "langchain-core>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +41,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# Line length is enforced by the formatter, not the linter — wrapping long
+# prompt strings and docstrings by hand hurts readability more than it helps.
+ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

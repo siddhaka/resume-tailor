@@ -13,14 +13,22 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # Anthropic / LLM
-    anthropic_api_key: str
-    llm_model: str = "claude-haiku-4-5-20251001"
+    # LLM provider selection: "ollama" (self-hosted, no key) or "anthropic".
+    # Ollama is the default so the pipeline runs end-to-end with no paid API.
+    llm_provider: str = "ollama"
     llm_max_tokens: int = 4096
 
+    # Ollama (used when llm_provider == "ollama")
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder:7b"
+
+    # Anthropic (used when llm_provider == "anthropic")
+    anthropic_api_key: str | None = None
+    llm_model: str = "claude-haiku-4-5-20251001"
+
     # Security
-    api_key_salt: str
-    secret_key: str
+    api_key_salt: str = "dev-salt-change-me"
+    secret_key: str = "dev-secret-change-me"
 
     # Rate limiting
     rate_limit_per_minute: int = 60

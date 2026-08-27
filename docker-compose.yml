@@ -1,0 +1,179 @@
+# docker-compose: local development only.
+# Production uses Kubernetes (see infra/k8s/).
+#
+# docker-compose lets a developer run the entire stack — Redis, the FastAPI
+# server, the Celery worker, and the Gradio UI — with a single `docker compose
+# up` command, without installing Redis locally or managing process order
+# manually. The architecture here mirrors production closely enough that issues
+# found locally are very likely to reproduce in Kubernetes.
+
+services:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Redis — broker and result backend
+  # ───────────────────────────────────────────────────────────────────────────
+  redis:
+    # redis:7-alpine uses Alpine Linux, a minimal distribution optimised for
+    # containers. The full redis image is ~100 MB; the alpine variant is ~30 MB.
+    # For a dependency we are not modifying, the smaller image is strictly better.
+    image: redis:7-alpine
+    container_name: resume-tailor-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --loglevel warning
+    # Flag explanations:
+    # --maxmemory 256mb         Hard memory cap. Without this Redis will
+    #                           consume all available system memory if job
+    #                           results accumulate or a memory leak develops.
+    # --maxmemory-policy        When the cap is hit, evict least-recently-used
+    #   allkeys-lru             keys. For a job queue, old completed results are
+    #                           less valuable than recent ones — LRU eviction
+    #                           is acceptable.
+    # --save ""                 Disables RDB snapshot persistence. Job results
+    #                           are ephemeral by design and do not need to
+    #                           survive a Redis restart. Disabling persistence
+    #                           removes the I/O overhead of periodic snapshot
+    #                           writes to disk.
+    # --loglevel warning        Reduces log noise in local development. In
+    #                           production this would be notice or verbose.
+    volumes:
+      - redis-data:/data
+    networks:
+      - resume-tailor-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # API — FastAPI server
+  # ───────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: resume-tailor-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        # condition: service_healthy means the api container will not start
+        # until Redis passes its healthcheck (redis-cli ping). Without this
+        # condition, Docker only guarantees the redis *container* has started —
+        # not that Redis is listening for connections. The API would crash-loop
+        # trying to connect to a not-yet-ready Redis. `service_healthy` waits
+        # for the healthcheck to report healthy before starting the dependent.
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Inside docker-compose, services reach each other by their service name
+      # as the hostname on the shared bridge network. These overrides point the
+      # container at `redis` (the service name) instead of `localhost`, and at
+      # the host's Ollama server via the docker host gateway instead of the
+      # container's own loopback.
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      DATABASE_URL: sqlite:////app/data/resume_tailor.db
+    extra_hosts:
+      # Lets the container resolve the host machine (where Ollama runs). Docker
+      # Desktop provides this automatically; declaring it keeps Linux hosts working.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Named volume for the SQLite key store so issued API keys survive
+      # container restarts and rebuilds.
+      - api-data:/app/data
+    networks:
+      - resume-tailor-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Worker — Celery task queue
+  # ───────────────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: resume-tailor-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        # The worker waits for the API to be healthy (not just started) because
+        # the API's lifespan handler calls auth.initialize_db(), which creates
+        # the SQLite schema. If the worker started before the API finished its
+        # startup, the SQLite file might not exist yet. Waiting for the API's
+        # healthcheck to pass guarantees the schema is in place before any
+        # worker task could attempt a database read.
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - resume-tailor-network
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Gradio — browser UI client
+  # ───────────────────────────────────────────────────────────────────────────
+  gradio:
+    build:
+      context: gradio_client/
+      dockerfile: Dockerfile.gradio
+    container_name: resume-tailor-gradio
+    ports:
+      - "7860:7860"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # `localhost` inside the gradio container refers to the gradio container
+      # itself, not the host machine. Services on the shared bridge network are
+      # reachable by their service name as the hostname. `http://api:8000`
+      # routes to the api container on the internal network, without going
+      # through the host's port mapping at all.
+      API_BASE_URL: http://api:8000
+    networks:
+      - resume-tailor-network
+    restart: unless-stopped
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  resume-tailor-network:
+    # A bridge network is a private internal network shared by these containers.
+    # Services reach each other by service name (e.g. `redis`, `api`) but are
+    # isolated from other Docker networks on the host. The Redis port 6379 is
+    # reachable from api and worker via the hostname `redis` on this network,
+    # and reachable from the host machine only because of the `ports: 6379:6379`
+    # mapping — not from any other Docker network by default.
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  # Named volumes managed by Docker. They persist across container restarts and
+  # survive `docker compose down` (but not `docker compose down -v`).
+  # redis-data backs the broker; api-data holds the SQLite API-key store.
+  redis-data:
+  api-data:

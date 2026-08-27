@@ -1,0 +1,66 @@
+# Multi-stage build — same rationale as Dockerfile.api.
+# Builder: uv + all dependencies. Runtime: slim base + venv only.
+# See Dockerfile.api for the full explanation.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — builder
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+RUN pip install uv
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --no-dev --frozen
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — runtime
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+RUN groupadd --gid 1001 appuser && \
+    useradd --uid 1001 --gid appuser --shell /bin/bash --create-home appuser
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+COPY app/ /app/app/
+
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# The Celery worker exposes no HTTP port.
+# It communicates exclusively through Redis: it reads tasks from a Redis
+# list (the broker queue) and writes results back to Redis (the result
+# backend). There is no server socket to expose. Listing a port here would
+# mislead readers into thinking there is a network interface to configure.
+
+# start-period=60s (longer than the API's 40s) because the worker must:
+# 1. Connect to the Redis broker.
+# 2. Import all task modules and register them with Celery.
+# 3. Start the worker pool processes.
+# Only then can it respond to `celery inspect ping`. The API only needs to
+# start uvicorn and open one SQLite connection, which is faster.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD celery -A app.worker.celery_app.celery_app inspect ping || exit 1
+
+# --concurrency=2: two worker child processes per container, each capable of
+# running one LLM call at a time. LLM calls are I/O-bound — the worker
+# thread is almost entirely idle while waiting for the Anthropic API to
+# respond — so concurrency=2 handles 2 simultaneous LLM calls efficiently
+# without doubling memory for CPU-heavy work. Scale total throughput by
+# adding more worker pods in Kubernetes, not by raising concurrency per pod.
+# Keeping concurrency low makes memory usage per pod predictable and
+# simplifies capacity planning.
+CMD ["celery", \
+     "-A", "app.worker.celery_app.celery_app", \
+     "worker", \
+     "--loglevel=info", \
+     "--concurrency=2", \
+     "--queues=celery"]

@@ -1,0 +1,22 @@
+# Exposes the API through the cluster ingress controller at resume-tailor.local.
+# Add the host to /etc/hosts pointing at `minikube ip` (see README).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: resume-tailor
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: resume-tailor.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

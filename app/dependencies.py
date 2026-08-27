@@ -36,17 +36,22 @@ async def get_rate_limiter(
 
 
 async def verify_api_key_header(
-    x_api_key: str = Header(..., alias="X-API-Key"),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
 ) -> str:
     """Validate the X-API-Key header and return the plaintext key.
 
+    The header is declared Optional so that a missing header produces a 401
+    rather than a 422. FastAPI returns 422 for a missing *required* Header
+    parameter because it treats the missing value as a request validation
+    error. By making it Optional and checking for None ourselves, we produce
+    the semantically correct 401: the request is structurally valid, but
+    authentication credentials are absent or wrong.
+
     We return the key rather than True because downstream dependencies need
-    the key value itself — specifically, check_rate_limit uses it as the
-    rate-limiter identifier so that each API key has its own independent
-    quota. Returning True would force every downstream dependency to re-read
-    the header, defeating the purpose of the dependency graph.
+    the value itself — check_rate_limit uses it as the rate-limiter
+    identifier so each API key has its own independent quota.
     """
-    if not await auth.verify_api_key(x_api_key):
+    if not x_api_key or not await auth.verify_api_key(x_api_key):
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key",
